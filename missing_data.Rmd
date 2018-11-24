@@ -1,0 +1,470 @@
+---
+title: "Missing Data"
+author: "Jordan Fan"
+date: "November 20, 2018"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(tm)
+library(SnowballC)
+library(MASS)
+library(leaps)
+library(gbm)
+library(car)
+library(tidyverse)
+library(dplyr)
+library(tidytext)
+library(stringr)
+library(yardstick)
+library(tictoc)
+library(keras)
+#Need to install.packages("keras") and then run install_keras()
+library(data.table)
+library(softImpute)
+library(bigmemory)
+library(ranger)
+library(caret)
+```
+
+#Data Processing and Sentiment Score Calculation 
+```{r}
+drugs = read.csv("C:/Users/Jordan Fan/IEOR142/project/drugs/drugs_reduced_reduced.csv", stringsAsFactors = FALSE, na.strings = c("", "NA"))
+
+#relabeling effectiveness into 3 categories: Highly effective, moderately effective, and ineffective to improve accuracy and because the differences between the middle groups is difficult to distinguish 
+drugs = drugs[,-c(1, 2)]
+cond_effect = drugs[!is.na(drugs$effectiveness),]
+cond_effect[cond_effect$effectiveness == "Considerably Effective", "effectiveness"] = "Highly Effective"
+cond_effect[cond_effect$effectiveness == "Marginally Effective", "effectiveness"] = "Moderately Effective"
+
+cond_effect[cond_effect$sideEffects == "Extremely Severe Side Effects", "sideEffects"] = "Severe Side Effects"
+cond_effect[cond_effect$sideEffects == "Mild Side Effects", "sideEffects"] = "Moderate Side Effects"
+
+drugcom = drugs[is.na(drugs$effectiveness),]
+
+#lower strings, get rid of words that error out models, get rid of strings that aren't alphanumeric, getting rid of stop words unless they quantify or negate something, stem the words  
+corpus = Corpus(VectorSource(cond_effect$review))
+corpus = tm_map(corpus, tolower)
+corpus = tm_map(corpus, function(x) gsub("'", "", x))
+corpus = tm_map(corpus, function(x) gsub("function", "func", x))
+corpus = tm_map(corpus, function(x) gsub("break", "brea", x))
+corpus = tm_map(corpus, function(x) gsub("next", "nex", x))
+corpus = tm_map(corpus, function(x) gsub("[^a-z0-9]", " ", x))
+exception = c("not", "no", "few", "reduc", "immedi", "didnt", "most", "quick", "never", "littl", "well")
+my_stopwords = setdiff(stopwords("english"), exception)
+corpus = tm_map(corpus, removeWords, my_stopwords)
+corpus = tm_map(corpus, stemDocument)
+
+#getting frequencies of the words in the document 
+frequencies = DocumentTermMatrix(corpus)
+drugTM = as.data.frame(as.matrix(frequencies))
+
+#getting the sentiment of the reviews 
+sentiments = get_sentiments("afinn")
+sentiments$word = wordStem(sentiments$word)
+sentiments = as.data.frame(unique(sentiments))
+sentiments = t(sentiments)
+colnames(sentiments) = sentiments[1,]
+drugTM_sub = drugTM[,intersect(colnames(sentiments), colnames(drugTM))]
+sentiments_sub = sentiments[, intersect(colnames(sentiments), colnames(drugTM))]
+sentiments_sub = as.numeric(sentiments_sub[2,])
+sentiment_score = as.matrix(drugTM_sub) %*% as.matrix(sentiments_sub)
+
+#narrow down on the frequency to get a reasonable sized dataset and adding the rating, effectiveness, side effects, rating, and price 
+sparse = removeSparseTerms(frequencies, 0.97)
+drugTM = as.data.frame(as.matrix(sparse))
+drugTM$sentiment = as.numeric(sentiment_score)
+drugTM$effectiveness = as.factor(cond_effect$effectiveness)
+drugTM$sideEffects = as.factor(cond_effect$sideEffects)
+drugTM$rating = cond_effect$rating
+drugTM$price = cond_effect$price
+which(colnames(drugTM) == "100")
+drugTM = drugTM[,-294]
+
+#split the data 80/20 
+set.seed(235)
+train = sample(1:nrow(drugTM), nrow(drugTM)* .8)
+test = -train
+drugTM_train = drugTM[train,]
+drugTM_test = drugTM[test,]
+```
+
+#LDA for Effectiveness
+```{r}
+Lda_model = lda(effectiveness ~ rating, data = drugTM_train)
+lda_predict = apply(predict(Lda_model, newdata = drugTM_test)$posterior, 1, which.max)
+lda_predict = factor(lda_predict, levels = c(1, 2, 3), labels = c("Highly Effective", "Ineffective", "Moderately Effective"))
+sum(lda_predict == drugTM_test$effectiveness)/nrow(drugTM_test)
+
+Lda_model2 = lda(effectiveness ~ rating + sentiment, data = drugTM_train)
+lda_predict2 = apply(predict(Lda_model2, newdata = drugTM_test)$posterior, 1, which.max)
+lda_predict2 = factor(lda_predict2, levels = c(1, 2, 3), labels = c("Highly Effective", "Ineffective", "Moderately Effective"))
+sum(lda_predict2 == drugTM_test$effectiveness)/nrow(drugTM_test)
+```
+Using just the rating of the drug to predict the effectiveness, we get an accuracy of 77.86%, then adding the sentiment of the review into the model, the model improves by 0.16% to 78.02%
+
+#Random Forest for Effectiveness no Side Effects
+Process of finding optimal mtry value commented out so don't have to run the whole thing again, optimal mtry value for predicting effectiveness is 62
+```{r}
+#seq_20 = seq(1, 339, 20)
+#errors = c()
+
+#for(i in seq_20){
+#  set.seed(12348)
+#  print(i)
+#  errors = c(errors, ranger(effectiveness ~ . - sideEffects, data = drugTM_train, mtry = i)$prediction.error)
+#}
+
+#errors[which.min(errors)]
+#seq_20[which.min(errors)]
+#min error occurred at mtry = 61, so look at interval 61-101
+
+#seq_10 = seq(41, 81, 10)
+#errors2 = c()
+#for(i in seq_10){
+#  set.seed(12348)
+#  print(i)
+#  errors2 = c(errors2, ranger(effectiveness ~ . - sideEffects, data = drugTM_train, mtry = i)$prediction.error)
+#}
+
+#errors2[which.min(errors2)]
+#seq_10[which.min(errors2)]
+#min error occurred at mtry = 61,
+
+#seq_3 = seq(52, 70, 3)
+#errors3 = c()
+#for(i in seq_3){
+#  set.seed(12348)
+#  print(i)
+#  errors3 = c(errors3, ranger(effectiveness ~ . - sideEffects, data = drugTM_train, mtry = i)$prediction.error)
+#}
+
+#errors3[which.min(errors3)]
+#seq_3[which.min(errors3)]
+###min error occurred at mtry = 61
+
+#seq_1 = seq(59, 63, 1)
+#errors4 = c()
+#for(i in seq_1){
+#  set.seed(12348)
+#  print(i)
+#  errors4 = c(errors4, ranger(effectiveness ~ . - sideEffects, data = drugTM_train, mtry = i)$prediction.error)
+#}
+
+#errors4[which.min(errors4)]
+#seq_1[which.min(errors4)]
+
+set.seed(12348)
+best.rf = ranger(effectiveness ~ . - sideEffects, data = drugTM_train, mtry = 62)
+predictions = predict(best.rf, data = drugTM_test)$prediction
+sum(predictions == drugTM_test$effectiveness)/nrow(drugTM_test)
+table(predictions, drugTM_test$effectiveness)
+```
+Using a random forest model with mtry = 62, we get a accuracy of 80.89%, which improves upon the LDA model by 2.87%
+
+#Simple Neural Network for Effectiveness 
+```{r}
+use_session_with_seed(564)
+trainX = model.matrix(effectiveness ~ . - sideEffects, data = drugTM_train)
+trainX = trainX[, 2:ncol(trainX)]
+trainY = model.matrix(~effectiveness - 1, data = drugTM_train)
+
+testX = model.matrix(effectiveness ~ . - sideEffects, data = drugTM_test)
+testX = testX[, 2:ncol(testX)]
+testY = model.matrix(~effectiveness - 1, data = drugTM_test)
+
+nn_mod_1 = keras_model_sequential()
+
+nn_mod_1 %>% 
+  layer_dense(units = 113, activation = "sigmoid", input_shape = c(339)) %>%
+  layer_dense(units = 3, activation = "softmax")
+summary(nn_mod_1)
+
+nn_mod_1 %>% compile(
+  optimizer = "rmsprop",
+  loss = "categorical_crossentropy",
+  metrics = c("accuracy")
+)
+
+tic("Neural Net 1:") 
+training_history <- nn_mod_1 %>% 
+  fit(trainX, trainY, 
+      epochs = 10, validation_split = 0.2)
+toc()
+nn_mod_1 %>% evaluate(testX, testY)
+
+```
+Running a single layer neural network with a sigmoid activation function in the first layer with 339/3 = 113 nodes, and a softmax activation function in the output layer with 3 nodes for each category in effectiveness, we get an accuracy of 78.34%, which is a decrease from the random forest model by 1.59%. The neural network seems to be overfitting the data so there might not be enough datapoints in the training set in order to generalize well for the test set. 
+
+#LDA for Side Effects 
+```{r}
+Lda_model_se = lda(sideEffects ~ rating, data = drugTM_train)
+lda_predict_se = apply(predict(Lda_model_se, newdata = drugTM_test)$posterior, 1, which.max)
+lda_predict_se = factor(lda_predict_se, levels = c(1, 2, 3), labels = c("Moderate Side Effects", "No Side Effects", "Severe Side Effects"))
+sum(lda_predict_se == drugTM_test$sideEffects)/nrow(drugTM_test)
+
+Lda_model_se2 = lda(sideEffects ~ rating + sentiment, data = drugTM_train)
+lda_predict_se2 = apply(predict(Lda_model_se2, newdata = drugTM_test)$posterior, 1, which.max)
+lda_predict_se2 = factor(lda_predict_se2, levels = c(1, 2, 3), labels = c("Moderate Side Effects", "No Side Effects", "Severe Side Effects"))
+sum(lda_predict_se2 == drugTM_test$sideEffects)/nrow(drugTM_test)
+
+```
+Predicting the side effect severity based on just the review, we get an accuracy of 58.59%, which is considerably lower than that of the effectiveness. Adding the sentiment to the model, the model improved to 60.66%. Although the rating of the drug is a pretty good indicator of the effectiveness of the drug, it isn't as good of an indicator of the severity of the side effects of the drug. 
+
+#Random Forest for Side Effects no Effectiveness
+```{r}
+#seq_20 = seq(1, 339, 20)
+#errors = c()
+
+#for(i in seq_20){
+#  set.seed(12348)
+#  print(i)
+#  errors = c(errors, ranger(sideEffects ~ . - effectiveness, data = drugTM_train, mtry = i)$prediction.error)
+#}
+
+#errors[which.min(errors)]
+#seq_20[which.min(errors)]
+##min error occurred at mtry = 81, so look at interval 61-101
+
+#seq_10 = seq(61, 101, 10)
+#errors2 = c()
+#for(i in seq_10){
+#  set.seed(12348)
+#  print(i)
+#  errors2 = c(errors2, ranger(sideEffects ~ . - effectiveness, data = drugTM_train, mtry = i)$prediction.error)
+#}
+
+#errors2[which.min(errors2)]
+#seq_10[which.min(errors2)]
+#min error occurred at mtry = 71,
+
+#seq_3 = seq(62, 80, 3)
+#errors3 = c()
+#for(i in seq_3){
+#  set.seed(12348)
+#  print(i)
+#  errors3 = c(errors3, ranger(sideEffects ~ . - effectiveness, data #= drugTM_train, mtry = i)$prediction.error)
+#}
+
+#errors3[which.min(errors3)]
+#seq_3[which.min(errors3)]
+##min error occurred at mtry = 71
+
+#seq_1 = seq(69, 73, 1)
+#errors4 = c()
+#for(i in seq_1){
+#  set.seed(12348)
+#  print(i)
+#  errors4 = c(errors4, ranger(sideEffects ~ . - effectiveness, data #= drugTM_train, mtry = i)$prediction.error)
+#}
+
+#errors4[which.min(errors4)]
+#seq_1[which.min(errors4)]
+set.seed(12348)
+best.rf2 = ranger(sideEffects ~ . -effectiveness, data = drugTM_train, mtry = 71)
+predictions2 = predict(best.rf2, data = drugTM_test)$prediction
+sum(predictions2 == drugTM_test$sideEffects)/nrow(drugTM_test)
+table(predictions2, drugTM_test$sideEffects)
+```
+After running a random forest model with mtry value of 71, the accuracy of the model at predicting the severity of the side effect increased to 74.84%, improving from the LDA model by 14.18%. So although the rating of the drug doesn't have a strong predictive power in determining the severity of the side effect, some words in the review are stronger indicators of the severity. 
+
+#Random Forest for Side Effects with Predicted Effectiveness
+```{r}
+#seq_20 = seq(1, 340, 20)
+#errors = c()
+
+drugTM_train2 = copy(drugTM_train)
+drugTM_train2$effectiveness = predict(best.rf, data = drugTM_train)$prediction
+drugTM_test2 = copy(drugTM_test)
+drugTM_test2$effectiveness = predict(best.rf, data = drugTM_test)$prediction
+
+#for(i in seq_20){
+#  set.seed(12348)
+#  print(i)
+#  errors = c(errors, ranger(sideEffects ~ . , data = drugTM_train2, #mtry = i)$prediction.error)
+#}
+
+#errors[which.min(errors)]
+#seq_20[which.min(errors)]
+#min error occurred at mtry = 81, so look at interval 61-101
+
+#seq_10 = seq(81, 121, 10)
+#errors2 = c()
+#for(i in seq_10){
+#  set.seed(12348)
+#  print(i)
+#  errors2 = c(errors2, ranger(sideEffects ~ . , data = #drugTM_train2, mtry = i)$prediction.error)
+#}
+
+#errors2[which.min(errors2)]
+#seq_10[which.min(errors2)]
+#min error occurred at mtry = 81,
+
+#seq_3 = seq(82, 100, 3)
+#errors3 = c()
+#for(i in seq_3){
+#  set.seed(12348)
+#  print(i)
+#  errors3 = c(errors3, ranger(sideEffects ~ . , data = #drugTM_train2, mtry = i)$prediction.error)
+#}
+
+#errors3[which.min(errors3)]
+#seq_3[which.min(errors3)]
+##min error occurred at mtry = 73
+
+#seq_1 = seq(89, 93, 1)
+#errors4 = c()
+#for(i in seq_1){
+#  set.seed(12348)
+#  print(i)
+#  errors4 = c(errors4, ranger(sideEffects ~ . , data = #drugTM_train2, mtry = i)$prediction.error)
+#}
+
+#errors4[which.min(errors4)]
+#seq_1[which.min(errors4)]
+set.seed(12348)
+best.rf3 = ranger(sideEffects ~ . , data = drugTM_train2, mtry = 91)
+predictions3 = predict(best.rf3, data = drugTM_test2)$prediction
+sum(predictions3 == drugTM_test2$sideEffects)/nrow(drugTM_test2)
+table(predictions3, drugTM_test2$sideEffects)
+```
+Looking to see how well the model would be in predicting the severity of the side effects of the drugs if using the predicted effectiveness as a variable, we ran a random forest model with mtry = 91 and got an accuracy of 74.68%, which is a decrease by 0.16% from the original side effect severity model. So when predicting the severity of the side effects, it's best to not to use the predicted effectiveness of the model as this would bring more uncertainty to the model because the effectiveness are predictions that aren't necessarily the actual value. 
+
+#Random Forest for Effectiveness with Predicted Side Effects
+```{r}
+#seq_20 = seq(1, 338, 20)
+#errors = c()
+
+drugTM_train3 = copy(drugTM_train)
+drugTM_train3$sideEffects = predict(best.rf2, data = drugTM_train)$prediction
+drugTM_test3 = copy(drugTM_test)
+drugTM_test3$sideEffects = predict(best.rf2, data = drugTM_test)$prediction
+
+#for(i in seq_20){
+#  set.seed(12348)
+#  print(i)
+#  errors = c(errors, ranger(effectiveness ~ . , data = #drugTM_train3, mtry = i)$prediction.error)
+#}
+
+#errors[which.min(errors)]
+#seq_20[which.min(errors)]
+##min error occurred at mtry = 181, so look at interval 161-201
+
+#seq_10 = seq(161, 201, 10)
+#errors2 = c()
+#for(i in seq_10){
+#  set.seed(12348)
+#  print(i)
+#  errors2 = c(errors2, ranger(effectiveness ~ . , data = #drugTM_train3, mtry = i)$prediction.error)
+#}
+
+#errors2[which.min(errors2)]
+#seq_10[which.min(errors2)]
+##min error occurred at mtry = 171,
+
+#seq_3 = seq(162, 180, 3)
+#errors3 = c()
+#for(i in seq_3){
+#  set.seed(12348)
+#  print(i)
+#  errors3 = c(errors3, ranger(effectiveness ~ . , data = #drugTM_train3, mtry = i)$prediction.error)
+#}
+
+#errors3[which.min(errors3)]
+#seq_3[which.min(errors3)]
+##min error occurred at mtry = 174
+
+#seq_1 = seq(172, 176, 1)
+#errors4 = c()
+#for(i in seq_1){
+#  set.seed(12348)
+#  print(i)
+#  errors4 = c(errors4, ranger(effectiveness ~ . , data = #drugTM_train3, mtry = i)$prediction.error)
+#}
+
+#errors4[which.min(errors4)]
+#seq_1[which.min(errors4)]
+
+set.seed(12348)
+best.rf4 = ranger(effectiveness ~ . , data = drugTM_train3, mtry = 174)
+predictions = predict(best.rf4, data = drugTM_test)$prediction
+sum(predictions == drugTM_test$effectiveness)/nrow(drugTM_test)
+table(predictions, drugTM_test$effectiveness)
+```
+Just as before, we would expect the accuracy of the effectiveness model to decrease when introducing the predicted side effect severity because the 
+
+#Final Models Trained on Whole Dataset
+```{r}
+set.seed(12348)
+final_rf_effect = ranger(effectiveness ~ . - sideEffects, data = drugTM, mtry = 62)
+set.seed(12348)
+final_rf_se = ranger(sideEffects ~ . - effectiveness, data = drugTM, mtry = 71)
+```
+
+
+#Prcoessing and Predicting Effectiveness and Side Effects on DrugCom Data 
+```{r}
+#removing drugs that appear less than 10 times 
+sorted_counts = as.data.frame(sort(table(drugcom$over_counter_name)))
+keep_drugs = sorted_counts$Var1[30:nrow(sorted_counts)]
+drugcom = drugcom[drugcom$over_counter_name %in% keep_drugs,]
+```
+
+
+```{r}
+corpus_dc = Corpus(VectorSource(drugcom$review))
+
+#lower strings, get rid of words that error out models, get rid of strings that aren't alphanumeric, getting rid of stop words unless they quantify or negate something, stem the words 
+corpus_dc = tm_map(corpus_dc, tolower)
+corpus_dc = tm_map(corpus_dc, function(x) gsub("'", "", x))
+corpus_dc = tm_map(corpus_dc, function(x) gsub("function", "func", x))
+corpus_dc = tm_map(corpus_dc, function(x) gsub("break", "brea", x))
+corpus_dc = tm_map(corpus_dc, function(x) gsub("next", "nex", x))
+corpus_dc = tm_map(corpus_dc, function(x) gsub("[^a-z0-9]", " ", x))
+exception = c("not", "no", "few", "reduc", "immedi", "didnt", "most", "quick", "never", "littl", "well")
+my_stopwords = setdiff(stopwords("english"), exception)
+corpus_dc = tm_map(corpus_dc, removeWords, my_stopwords)
+corpus_dc = tm_map(corpus_dc, stemDocument)
+
+#getting frequencies of the words in the document 
+frequencies_dc = DocumentTermMatrix(corpus_dc)
+#convert to tidy format because too large to transform to a matrix, processed so that the document numbers are actually numbers, the column for the words have the same name as sentiment dataframe to join
+drugcomTM = tidy(frequencies_dc)
+colnames(drugcomTM) = c("document", "word", "count")
+drugcomTM$document = as.numeric(drugcomTM$document)
+sentiments_dc = get_sentiments("afinn")
+sentiments_dc$word = wordStem(sentiments_dc$word)
+sentiments_dc = as.data.frame(unique(sentiments_dc))
+drug_joined = drugcomTM %>% inner_join(sentiments_dc, by = "word") %>% mutate(sentiment = score * count) 
+sentiments_score_dc = aggregate(drug_joined$sentiment, by = list(Document = drug_joined$document), FUN = sum) 
+
+#There are some missing entries because some of the reviews didn't have any words that corresponded with a word in the sentiment list, just filled those rows in with a sentiment value of 0 
+filled_sentiments = data.frame(Document = c(1:nrow(drugcom))) %>% left_join(sentiments_score_dc, by = "Document")
+filled_sentiments[is.na(filled_sentiments)] = 0
+
+#set frequency to 0.9995 to ensure that all the columns in drugTM are included in drugcomTM 
+sparse_dc = removeSparseTerms(frequencies_dc, 0.9995)
+drugcomTM = as.data.frame(as.matrix(sparse_dc))
+drugcomTM$sentiment = filled_sentiments$x
+drugcomTM$rating = drugcom$rating
+drugcomTM$price = drugcom$price
+colnames(drugTM)[which(!colnames(drugTM) %in% colnames(drugcomTM))]
+
+#predicting effectiveness and side effects 
+drugcomTM$effectiveness = predict(final_rf_effect, data = drugcomTM)$prediction
+drugcomTM$sideEffects = predict(final_rf_se, data = drugcomTM)$prediction
+
+#compiling everything to drugcom dataset 
+drugcom$sentiment = drugcomTM$sentiment
+drugcom$effectiveness = drugcomTM$effectiveness
+drugcom$sideEffects = drugcomTM$sideEffects
+```
+
+```{r}
+write.csv(drugcomTM, "drugs_final.csv")
+```
+
