@@ -1,0 +1,201 @@
+---
+title: "cleaning"
+output: html_document
+---
+```{r}
+library(tidyverse)
+library(dplyr)
+library(ggplot2)
+setwd("/Users/Owner/Desktop/IEOR142/project")
+drugs <- read.csv("drugs_reduced_reduced.csv", stringsAsFactors = FALSE) 
+```
+```{r}
+drugLib <- drugs  %>% filter(sideEffects != "") %>% dplyr::select(over_counter_name, condition, sideEffects, effectiveness, price, rating, review)
+
+
+drugCom <- drugs %>% filter(sideEffects == "") %>% dplyr::select(over_counter_name, condition, price, rating, review)
+
+```
+
+
+```{r}
+# Load packages
+# Function to compute accuracy of a classification model... you're welcome...
+tableAccuracy <- function(test, pred) {
+  t = table(test, pred)
+  a = sum(diag(t))/length(test)
+  return(a)
+}
+library(tm)
+library(SnowballC)
+library(wordcloud)
+library(MASS)
+library(caTools)
+library(dplyr)
+library(rpart)
+library(rpart.plot)
+library(randomForest)
+library(caret)
+library(tm.plugin.webmining)
+```
+
+
+Training drugLib model to predict effectiveness and sideEffects for drugCom. First, we do NLP on the reviews
+```{r}
+corpus_body <- Corpus(VectorSource(drugLib$review))
+corpus_condition <- Corpus(VectorSource(drugLib$condition))
+corpus_drugComReview <- Corpus(VectorSource(drugCom$review))
+corpus_drugComCondition <- Corpus(VectorSource(drugCom$condition))
+# To lower case
+corpus_body <- tm_map(corpus_body, tolower)
+corpus_condition <- tm_map(corpus_condition, tolower)
+corpus_drugComReview <- tm_map(corpus_drugComReview, tolower)
+corpus_drugComCondition <- tm_map(corpus_drugComCondition, tolower)
+# remove punctuations
+corpus_body <- tm_map(corpus_body, removePunctuation)
+corpus_condition <- tm_map(corpus_condition, removePunctuation)
+corpus_drugComReview <- tm_map(corpus_drugComReview, removePunctuation)
+corpus_drugComCondition <- tm_map(corpus_drugComCondition, removePunctuation)
+#inspection
+strwrap(corpus_body[[1]])
+
+# remove english stop words
+corpus_body = tm_map(corpus_body, removeWords, c("", stopwords("english")))
+corpus_condition <- tm_map(corpus_condition, removeWords, c("", stopwords("english")))
+corpus_drugComReview <- tm_map(corpus_drugComReview, removeWords, c("", stopwords("english")))
+corpus_drugComCondition <- tm_map(corpus_drugComCondition, removeWords, c("", stopwords("english")))
+# Insepction
+strwrap(corpus_body[[1]])
+
+
+```
+
+```{r}
+# remove stems
+corpus_body <- tm_map(corpus_body, stemDocument)
+corpus_condition <- tm_map(corpus_condition, stemDocument)
+corpus_drugComReview <- tm_map(corpus_drugComReview, stemDocument)
+corpus_drugComCondition <- tm_map(corpus_drugComCondition, stemDocument)
+#Inspection
+strwrap(corpus_body[[1]])
+
+#remove numbers
+corpus_body <- tm_map(corpus_body, removeNumbers)
+corpus_condition <- tm_map(corpus_condition, removeNumbers)
+corpus_drugComReview <- tm_map(corpus_drugComReview, removeNumbers)
+corpus_drugComCondition <- tm_map(corpus_drugComCondition, removeNumbers)
+# Get rid of sparse words
+frequencies_body <- DocumentTermMatrix(corpus_body)
+frequencies_condition <- DocumentTermMatrix(corpus_condition)
+frequencies_drugComReview <- DocumentTermMatrix(corpus_drugComReview)
+frequencies_drugComCondition <- DocumentTermMatrix(corpus_drugComCondition)
+sparse_body = removeSparseTerms(frequencies_body, 0.97)
+sparse_condition = removeSparseTerms(frequencies_condition, 0.99)
+sparse_drugComReview <- removeSparseTerms(frequencies_drugComReview, 0.999)
+sparse_drugComCondition <- removeSparseTerms(frequencies_drugComCondition, 0.999)
+
+# Creating a dataframe for both of them
+body = as.data.frame(as.matrix(sparse_body))
+condition = as.data.frame(as.matrix(sparse_condition))
+drugComReview = as.data.frame(as.matrix(sparse_drugComReview))
+drugComCondition = as.data.frame(as.matrix(sparse_drugComCondition))
+
+# Make column names
+colnames(body) = make.names(colnames(body))
+colnames(condition) = make.names(paste("condition",colnames(condition)))
+colnames(drugComReview) = make.names(colnames(drugComReview))
+colnames(drugComCondition) = make.names(paste("condition", colnames(drugComCondition)))
+drugCom_dat <- cbind(drugComReview, drugComCondition)
+drugCom_dat$rating <- drugCom$rating
+drugCom_dat$over_counter_name <- drugCom$over_counter_name
+drugCom_dat$price = drugCom$price
+body = cbind(body, condition)
+body$over_counter_name = as.factor(drugLib$over_counter_name)
+body$price = drugLib$price
+body$rating = drugLib$rating
+
+# Reduce effectiveness into 3 levels of factor in drug lib data
+effect <- c()
+num = 1
+for (i in drugLib$effectiveness) {
+  if (i == "Highly Effective" | i == "Considerably Effective") {
+    effect[num] <- "Effective"
+  } else if (i == "Moderately Effective" | i == "Marginally Effective") {
+    effect[num] <- "Moderately Effective"
+  } else {
+    effect[num] <- "Ineffective"
+  }
+  num = num + 1
+}
+body$effectiveness = as.factor(effect)
+
+diffeff <- c()
+same <- c()
+num = 1
+num2 = 1
+for (i in colnames(drugCom_dat)) {
+  if (i %in% colnames(body)) {
+    same[num2] <- i
+    num2 = num2 + 1
+  } else {
+  }
+}
+same1 <- dplyr::select(drugCom_dat, same)
+
+for (i in colnames(body)) {
+  if (i %in% colnames(same1)) {
+  } else {
+    diffeff[num] = i
+    num = num + 1
+  }
+}
+temp_dat <- data.frame(matrix(0, ncol = length(diffeff), nrow = nrow(same1)))
+colnames(temp_dat) = diffeff
+result_eff <- cbind(same1, temp_dat)
+
+diffeff
+length(diffeff)
+length(same)
+```
+
+Start Training the data for effectiveness and side Effects
+```{r}
+# Split data into training and testing sets
+set.seed(123)  # So we get the same results
+spl = sample.split(body$effectiveness, SplitRatio = 0.7)
+
+effTrain = body %>% filter(spl == TRUE)
+effTest = body %>% filter(spl == FALSE)
+# Basic Random Forests:
+library(ranger)
+effective_RF = ranger(effectiveness ~ ., data=effTrain)
+PredictRF_eff = predict(effective_RF, data = result_eff)
+drugCom$effectiveness <- PredictRF_eff[[1]]
+
+# Now, I want to do the same thing for sideEffects
+
+# First, I want to remove effectiveness from the original data 
+body_side <- within(body, rm(effectiveness))
+result_side <- within(result_eff, rm(effectiveness))
+
+# Then, I add the side effect variable in
+body_side$sideEffects <- drugLib$sideEffects
+
+# Predict using RF again
+# Split data into training and testing sets
+set.seed(123)  # So we get the same results
+spl = sample.split(body_side$sideEffects, SplitRatio = 0.7)
+
+sideTrain = body_side %>% filter(spl == TRUE)
+sideTest = body_side %>% filter(spl == FALSE)
+# Basic Random Forests:
+side_RF = ranger(sideEffects ~ ., data=sideTrain)
+PredictRF_side = predict(side_RF, data = result_side)
+drugCom$sideEffects <- PredictRF_side[[1]]
+temp <- drugs %>% filter(sideEffects == "")
+drugCom$review <- temp$review
+drugCom$usefulCount = temp$usefulCount
+drugCom$drugName <- temp$drugName
+write.csv(drugCom, 'DrugComUpdated.csv')
+```
+
