@@ -174,7 +174,7 @@ for (i in 20:130) {
   }
   
 }
-mod_mtry # mtry =   30
+mod_mtry # mtry = 130
 moderate_rf1 <- ranger(over_counter_name ~ . -effectiveness, mtry = 130, data = Moderate_drug.train)
 moderate_pred <- predict(moderate_rf1, data = Moderate_drug.test)
 moderate_acc <- tableAccuracy(moderate_pred$predictions, Moderate_drug.test$over_counter_name)
@@ -217,16 +217,11 @@ effective_pred <- predict(effective_rf1, data = effective_drug.test)
 effective_acc <- tableAccuracy(effective_pred$predictions, effective_drug.test$over_counter_name)
 effective_acc
 
+
 correct_cv <- ineff_acc*length(ineffective_drug.test$over_counter_name) + moderate_acc*length(Moderate_drug.test$over_counter_name) + effective_acc*length(effective_drug.test$over_counter_name)
 
 accuracy_cv <- correct_cv/total_test_length
 accuracy_cv
-
-effective_rf1 <- ranger(over_counter_name ~ . -effectiveness, mtry = 130, data = effective_drug.train)
-effective_pred <- predict(effective_rf1, data = effective_drug.test)
-effective_acc <- tableAccuracy(effective_pred$predictions, effective_drug.test$over_counter_name)
-effective_acc
-
 
 # Trying overall without cluser then predict
 set.seed(123) 
