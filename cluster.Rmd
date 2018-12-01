@@ -1,0 +1,347 @@
+---
+title: "boost"
+output: html_document
+---
+
+```{r}
+library(tm)
+library(SnowballC)
+library(MASS)
+library(caTools)
+library(plyr)
+library(dplyr)
+library(rpart)
+library(rpart.plot)
+library(randomForest)
+library(caret)
+library(ggplot2)
+library(rsample)
+library(ranger)
+library(h2o)
+library(softImpute)
+
+setwd("/Users/Owner/Desktop/IEOR142/project")
+drug = read.csv("drugs_final1.csv", stringsAsFactors=FALSE, na.strings = c("", "NA"))
+drug$drugName <- NULL
+drug$X <- NULL
+
+####### removing rows where over_counter_name has frequency <=50 #####
+sorted_counts = as.data.frame(sort(table(drug$over_counter_name)))
+keep_drugs = sorted_counts$Var1[106:nrow(sorted_counts)] 
+drug = drug[drug$over_counter_name %in% keep_drugs,]
+
+##### No clustering #####
+######## predicting Over counter names with only review + condition #########
+####### NLP ##########
+corpusCondition = Corpus(VectorSource(drug$condition))
+corpusCondition = tm_map(corpusCondition, tolower)
+
+corpusReview = Corpus(VectorSource(drug$review))
+corpusReview = tm_map(corpusReview, tolower)
+corpusReview = tm_map(corpusReview, function(x) gsub("[^a-z0-9]", " ", x))
+#corpusCondition = tm_map(corpusCondition, removePunctuation)
+#corpusReview = tm_map(corpusReview, removePunctuation)
+corpusReview = tm_map(corpusReview, removeNumbers)
+exception = c("not", "no", "few", "reduc", "immedi", "didnt", "most", "quick", "never", "littl", "well")
+my_stopwords = setdiff(stopwords("english"), exception)
+corpusReview = tm_map(corpusReview, removeWords, c(my_stopwords, "im"))
+corpusReview = tm_map(corpusReview,stemDocument)
+
+strwrap(corpusReview[[1]])
+strwrap(corpusCondition[[1]])
+
+CondFreq = DocumentTermMatrix(corpusCondition)
+RevFreq = DocumentTermMatrix(corpusReview)
+
+sparseCond = removeSparseTerms(CondFreq, 0.995)
+sparseRev = removeSparseTerms(RevFreq, 0.90)
+
+CondData = as.data.frame(as.matrix(sparseCond))
+RevData = as.data.frame(as.matrix(sparseRev))
+
+drugData<-cbind(CondData,RevData)
+colnames(drugData) = make.names(colnames(drugData))
+drugData$over_counter_name = drug$over_counter_name
+drugData$condition = as.factor(drug$condition)
+drugData$effectiveness = as.factor(drug$effectiveness)
+drugData$sideEffects = as.factor(drug$sideEffects)
+drugData$price = as.numeric(drug$price)
+drugData$rating = as.numeric(drug$rating)
+drugData$usefulCount = as.numeric(drug$usefulCount)
+drugData$sentiment = as.numeric(drug$sentiment)
+
+for (i in 1:ncol(drugData)) {
+  names(drugData) <- make.names(names(drugData), unique = TRUE) }
+
+ineffective_drug <- drugData %>% dplyr::filter(effectiveness == "Ineffective")
+Moderate_drug <- drugData %>% dplyr::filter(effectiveness == "Moderately Effective")
+effective_drug <- drugData %>% dplyr::filter(effectiveness == "Highly Effective")
+
+
+
+##### training ########
+tableAccuracy <- function(test, pred) {
+  t = table(test, pred)
+  a = sum(diag(t))/length(test)
+  return(a)
+}
+library(ranger)
+set.seed(123) 
+spl = sample.split(ineffective_drug$over_counter_name, SplitRatio = 0.7)
+ineffective_drug.train = ineffective_drug %>% dplyr::filter(spl == TRUE)
+ineffective_drug.test = ineffective_drug %>% dplyr::filter(spl == FALSE)
+ineffective_rf <- ranger(over_counter_name ~ . -effectiveness, data= ineffective_drug.train)
+ineffective_pred <- predict(ineffective_rf, data = ineffective_drug.test)
+ineffective_accuracy <- tableAccuracy(ineffective_pred$predictions, ineffective_drug.test$over_counter_name)
+table(ineffective_pred$predictions, ineffective_drug.test$over_counter_name)
+tableAccuracy(ineffective_pred$predictions, ineffective_drug.test$over_counter_name)
+
+set.seed(123) 
+spl = sample.split(Moderate_drug$over_counter_name, SplitRatio = 0.7)
+Moderate_drug.train = Moderate_drug %>% dplyr::filter(spl == TRUE)
+Moderate_drug.test = Moderate_drug %>% dplyr::filter(spl == FALSE)
+Moderate_rf <- ranger(over_counter_name ~ . -effectiveness, data= Moderate_drug.train)
+Moderate_pred <- predict(Moderate_rf, data = Moderate_drug.test)
+Moderate_accuracy <- tableAccuracy(Moderate_pred$predictions, Moderate_drug.test$over_counter_name)
+table(Moderate_pred$predictions, Moderate_drug.test$over_counter_name)
+
+set.seed(123) 
+spl = sample.split(effective_drug$over_counter_name, SplitRatio = 0.7)
+effective_drug.train = effective_drug %>% dplyr::filter(spl == TRUE)
+effective_drug.test = effective_drug %>% dplyr::filter(spl == FALSE)
+effective_rf <- ranger(over_counter_name ~ . -effectiveness, data= effective_drug.train)
+effective_pred <- predict(effective_rf, data = effective_drug.test)
+effective_accuracy <- tableAccuracy(effective_pred$predictions, effective_drug.test$over_counter_name)
+table(effective_pred$predictions, effective_drug.test$over_counter_name)
+
+total_test_length <- length(ineffective_drug.test$over_counter_name) + length(Moderate_drug.test$over_counter_name) + length(effective_drug.test$over_counter_name)
+correct <- ineffective_accuracy*length(ineffective_drug.test$over_counter_name) + Moderate_accuracy*length(Moderate_drug.test$over_counter_name) + effective_accuracy*length(effective_drug.test$over_counter_name)
+
+accuracy <- correct/total_test_length
+accuracy
+
+
+# LEt's do cross validation on all three clusters to find the optimal mtry value for each
+tgrid <- expand.grid(
+  .mtry = 10:20,
+  .splitrule = "gini",
+  .min.node.size = 1
+)
+
+ineffective_cv <- train(over_counter_name ~ . -effectiveness,
+                 data = ineffective_drug.train,
+                 method = "ranger",
+                 tuneGrid = tgrid,
+                 trControl = trainControl(method = "cv", number = 5, verboseIter = TRUE))
+
+
+ineffective_cv #mtry = 17 best. Also manually checked higher by running ranger. 17 is the highest accuracy
+ineffective_rf1 <- ranger(over_counter_name ~ . -effectiveness, mtry = 17, data = ineffective_drug.train)
+ineffective_pred <- predict(ineffective_rf1, data = ineffective_drug.test)
+ineff_acc <- tableAccuracy(ineffective_pred$predictions, ineffective_drug.test$over_counter_name)
+ineff_acc
+
+ggplot(ineffective_cv$results, aes(x = mtry, y = Accuracy)) + geom_point(size = 2) + geom_line() + 
+  ylab("CV Accuracy") + theme_bw() + 
+  theme(axis.title=element_text(size=18), axis.text=element_text(size=18))
+
+moderate_cv <- train(over_counter_name ~ . -effectiveness,
+                 data = Moderate_drug.train,
+                 method = "ranger",
+                 tuneGrid = tgrid,
+                 trControl = trainControl(method = "cv", number = 5, verboseIter = TRUE))
+
+moderate_cv #mtry = 20
+moderate_rf1 <- ranger(over_counter_name ~ . -effectiveness, mtry = 30, data = Moderate_drug.train)
+moderate_pred <- predict(moderate_rf1, data = Moderate_drug.test)
+moderate_acc <- tableAccuracy(moderate_pred$predictions, Moderate_drug.test$over_counter_name)
+moderate_acc
+
+ggplot(moderate_cv$results, aes(x = mtry, y = Accuracy)) + geom_point(size = 2) + geom_line() + 
+  ylab("CV Accuracy") + theme_bw() + 
+  theme(axis.title=element_text(size=18), axis.text=element_text(size=18))
+
+# train validation take too long, so writing a for loop to check which mtry yields best accuracy
+mod_mtry = 20
+best_accuracy = 0
+for (i in 20:130) {
+  moderate_model <- ranger(over_counter_name ~ . -effectiveness, mtry = i, data = Moderate_drug.train)
+  moderate_model_pred <- predict(moderate_model, data = Moderate_drug.test)
+  moderate_model_accuracy <- tableAccuracy(moderate_model_pred$predictions, Moderate_drug.test$over_counter_name)
+  if (moderate_model_accuracy > best_accuracy) {
+    mod_mtry = i
+    best_accuracy = moderate_model_accuracy
+  }
+  
+}
+mod_mtry # mtry =   30
+moderate_rf1 <- ranger(over_counter_name ~ . -effectiveness, mtry = 130, data = Moderate_drug.train)
+moderate_pred <- predict(moderate_rf1, data = Moderate_drug.test)
+moderate_acc <- tableAccuracy(moderate_pred$predictions, Moderate_drug.test$over_counter_name)
+moderate_acc
+
+
+effective_cv <- train(over_counter_name ~ . -effectiveness,
+                 data = effective_drug.train,
+                 method = "ranger",
+                 tuneGrid = tgrid,
+                 trControl = trainControl(method = "cv", number = 5, verboseIter = TRUE))
+
+effective_cv #mtry = 20
+effective_rf1 <- ranger(over_counter_name ~ . -effectiveness, mtry = 20, data = effective_drug.train)
+effective_pred <- predict(effective_rf1, data = effective_drug.test)
+effective_acc <- tableAccuracy(effective_pred$predictions, effective_drug.test$over_counter_name)
+effective_acc
+
+ggplot(effective_cv$results, aes(x = mtry, y = Accuracy)) + geom_point(size = 2) + geom_line() + 
+  ylab("CV Accuracy") + theme_bw() + 
+  theme(axis.title=element_text(size=18), axis.text=element_text(size=18))
+
+
+# train validation take too long, so writing a for loop to check which mtry yields best accuracy. Didn't actually run the full for loop. But just assumed 130 because it is similar to the moderate effectiveness
+eff_mtry = 20
+best_accuracy = 0
+for (i in 20:130) {
+  effective_model <- ranger(over_counter_name ~ . -effectiveness, mtry = i, data = effective_drug.train)
+  effective_model_pred <- predict(effective_model, data = effective_drug.test)
+  effective_model_accuracy <- tableAccuracy(effective_model_pred$predictions, effective_drug.test$over_counter_name)
+  if (effective_model_accuracy > best_accuracy) {
+    eff_mtry = i
+    best_accuracy = effective_model_accuracy
+  }
+}
+
+eff_mtry # mtry = 130
+effective_rf1 <- ranger(over_counter_name ~ . -effectiveness, mtry = 130, data = effective_drug.train)
+effective_pred <- predict(effective_rf1, data = effective_drug.test)
+effective_acc <- tableAccuracy(effective_pred$predictions, effective_drug.test$over_counter_name)
+effective_acc
+
+correct_cv <- ineff_acc*length(ineffective_drug.test$over_counter_name) + moderate_acc*length(Moderate_drug.test$over_counter_name) + effective_acc*length(effective_drug.test$over_counter_name)
+
+accuracy_cv <- correct_cv/total_test_length
+accuracy_cv
+
+effective_rf1 <- ranger(over_counter_name ~ . -effectiveness, mtry = 130, data = effective_drug.train)
+effective_pred <- predict(effective_rf1, data = effective_drug.test)
+effective_acc <- tableAccuracy(effective_pred$predictions, effective_drug.test$over_counter_name)
+effective_acc
+
+
+# Trying overall without cluser then predict
+set.seed(123) 
+spl = sample.split(drugData$over_counter_name, SplitRatio = 0.7)
+drug.train = drugData %>% filter(spl == TRUE)
+drug.test = drugData %>% filter(spl == FALSE)
+ranger.all = ranger(over_counter_name ~ .,
+                 data = drug.train, mtry = 130, verbose = TRUE)
+
+pred.rg.all = predict(ranger.all, data = drug.test)
+tableAccuracy(drug.test$over_counter_name, pred.rg.all$predictions)
+
+
+
+
+```
+
+Let's bootstrap to see how confident we are in our results:
+```{r}
+library(boot)
+
+mean_squared_error <- function(data, index) {
+  responses <- data$response[index]
+  predictions <- data$prediction[index]
+  MSE <- mean((responses - predictions)^2)
+  return(MSE)
+}
+
+mean_absolute_error <- function(data, index) {
+  responses <- data$response[index]
+  predictions <- data$prediction[index]
+  MAE <- mean(abs(responses - predictions))
+  return(MAE)
+}
+
+OS_R_squared <- function(data, index) {
+  responses <- data$response[index]
+  predictions <- data$prediction[index]
+  baseline <- data$baseline[index]
+  SSE <- sum((responses - predictions)^2)
+  SST <- sum((responses - baseline)^2)
+  r2 <- 1 - SSE/SST
+  return(r2)
+}
+
+OSR2 <- function(prediction, test, train) {
+  SSE = sum((test - prediction)^2)
+  SST = sum((test - mean(train))^2)
+  OSR2 = 1 - SSE/SST
+  return (OSR2)
+}
+
+accuracy <- function(data, index) {
+  responses <- data$response[index]
+  predictions <- data$prediction[index]
+  
+  acc <- tableAccuracy(responses, predictions)
+  return (acc)
+  
+}
+
+
+all_metrics <- function(data, index) {
+  mse <- mean_squared_error(data, index)
+  mae <- mean_absolute_error(data, index)
+  OSR2 <- OS_R_squared(data, index)
+  accurate <- accuracy(data, index)
+  return(c(mse, mae, OSR2, accurate))
+}
+
+#Bootstrapping 
+###### Random Forests + Plots ###### 
+ineffective_test_set = data.frame(response = ineffective_drug.test$over_counter_name, prediction = ineffective_pred$predictions, baseline = 0)
+
+# do bootstrap
+set.seed(892)
+RF_boot <- boot(ineffective_test_set, all_metrics, R = 5000)
+#RF_boot
+
+
+# make plots
+rf_boot_plot_results = data.frame(accuracyestimates = RF_boot$t[,4], delta = RF_boot$t[,4] - RF_boot$t0[4])
+rf_boot_plot_results
+boot.ci(RF_boot, index = 4, type = "perc")
+
+
+
+# Moderate Effective cluster boot_strapping
+moderate_test_set = data.frame(response = Moderate_drug.test$over_counter_name, prediction = moderate_pred$predictions, baseline = 0)
+#do bootstrap
+set.seed(892)
+moderateRF_boot <- boot(moderate_test_set, all_metrics, R = 5000)
+#RF_boot
+
+
+# make plots
+moderaterf_boot_plot_results = data.frame(accuracyestimates = moderateRF_boot$t[,4], delta = moderateRF_boot$t[,4] - moderateRF_boot$t0[4])
+moderaterf_boot_plot_results
+boot.ci(moderateRF_boot, index = 4, type = "perc")
+
+
+# Moderate Effective cluster boot_strapping
+effective_test_set = data.frame(response = effective_drug.test$over_counter_name, prediction = effective_pred$predictions, baseline = 0)
+#do bootstrap
+set.seed(892)
+effectiveRF_boot <- boot(effective_test_set, all_metrics, R = 5000)
+#RF_boot
+
+
+# make plots
+effectiverf_boot_plot_results = data.frame(accuracyestimates = effectiveRF_boot$t[,4], delta = effectiveRF_boot$t[,4] - effectiveRF_boot$t0[4])
+effectiverf_boot_plot_results
+boot.ci(effectiveRF_boot, index = 4, type = "perc")
+
+
+
+```
+
