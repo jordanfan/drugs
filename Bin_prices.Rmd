@@ -1,0 +1,63 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+```{r}
+library(tm)
+library(SnowballC)
+library(MASS)
+library(caTools)
+library(plyr)
+library(dplyr)
+library(rpart)
+library(rpart.plot)
+library(randomForest)
+library(caret)
+library(ggplot2)
+library(rsample)
+library(ranger)
+library(h2o)
+library(softImpute)
+library(stringr)
+
+setwd("/Users/Owner/Desktop/IEOR142/project")
+# Load the combined data table called drugs_final
+drug = read.csv("drugs_final.csv", stringsAsFactors=FALSE, na.strings = c("", "NA"))
+# Filter out the rows with condition = not listed or "user finds this comment useful"
+drug <- drug %>% dplyr::filter(condition != "Not Listed / Othe")
+drug <- drug %>% dplyr::filter(!str_detect(condition, "user finds this comment useful"))
+price_bins = c()
+num = 1
+for (i in drug$price) {
+  if (i >= 0 &  i < 1) {
+    price_bins[num] = "0-1"
+  } else if (i >= 1 & i < 2) {
+    price_bins[num] = "1-2"
+  } else if (i >= 2 & i < 5) {
+    price_bins[num] = "2-5"
+  } else if (i >= 5 & i < 10) {
+    price_bins[num] = "5-10"
+  } else if (i >= 10 & i < 25) {
+    price_bins[num] = "10-25"
+  } else if (i >= 25 & i < 40) {
+    price_bins[num] = "25-40"
+  } else if (i >= 40 & i < 60) {
+    price_bins[num] = "40-60"
+  } else if (i >= 60 & i < 80) {
+    price_bins[num] = "60-80"
+  } else if (i >= 80 & i < 100) {
+    price_bins[num] = "80-100"
+  } else if (i >= 100 & i < 200) {
+    price_bins[num] = "100-200"
+  } else if (i >= 200) {
+    price_bins[num] = "200< "
+  }
+  num = num + 1
+}
+table(price_bins)
+sort(drug$price)
+drug$price = price_bins
+write.csv(drug, "Final_Data.csv")
+```
+
