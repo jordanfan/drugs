@@ -21,7 +21,7 @@ library(h2o)
 library(softImpute)
 
 setwd("/Users/Owner/Desktop/IEOR142/project")
-drug = read.csv("drugs_final1.csv", stringsAsFactors=FALSE, na.strings = c("", "NA"))
+drug = read.csv("Final_Data.csv", stringsAsFactors=FALSE, na.strings = c("", "NA"))
 drug$drugName <- NULL
 drug$X <- NULL
 
@@ -65,7 +65,7 @@ drugData$over_counter_name = drug$over_counter_name
 drugData$condition = as.factor(drug$condition)
 drugData$effectiveness = as.factor(drug$effectiveness)
 drugData$sideEffects = as.factor(drug$sideEffects)
-drugData$price = as.numeric(drug$price)
+drugData$price = as.factor(drug$price)
 drugData$rating = as.numeric(drug$rating)
 drugData$usefulCount = as.numeric(drug$usefulCount)
 drugData$sentiment = as.numeric(drug$sentiment)
@@ -104,6 +104,7 @@ Moderate_rf <- ranger(over_counter_name ~ . -effectiveness, data= Moderate_drug.
 Moderate_pred <- predict(Moderate_rf, data = Moderate_drug.test)
 Moderate_accuracy <- tableAccuracy(Moderate_pred$predictions, Moderate_drug.test$over_counter_name)
 table(Moderate_pred$predictions, Moderate_drug.test$over_counter_name)
+Moderate_accuracy
 
 set.seed(123) 
 spl = sample.split(effective_drug$over_counter_name, SplitRatio = 0.7)
@@ -113,6 +114,7 @@ effective_rf <- ranger(over_counter_name ~ . -effectiveness, data= effective_dru
 effective_pred <- predict(effective_rf, data = effective_drug.test)
 effective_accuracy <- tableAccuracy(effective_pred$predictions, effective_drug.test$over_counter_name)
 table(effective_pred$predictions, effective_drug.test$over_counter_name)
+effective_accuracy
 
 total_test_length <- length(ineffective_drug.test$over_counter_name) + length(Moderate_drug.test$over_counter_name) + length(effective_drug.test$over_counter_name)
 correct <- ineffective_accuracy*length(ineffective_drug.test$over_counter_name) + Moderate_accuracy*length(Moderate_drug.test$over_counter_name) + effective_accuracy*length(effective_drug.test$over_counter_name)
@@ -121,9 +123,9 @@ accuracy <- correct/total_test_length
 accuracy
 
 
-# LEt's do cross validation on all three clusters to find the optimal mtry value for each
+# Let's do cross validation on all three clusters to find the optimal mtry value for each
 tgrid <- expand.grid(
-  .mtry = 10:20,
+  .mtry = 1:30,
   .splitrule = "gini",
   .min.node.size = 1
 )
@@ -135,23 +137,25 @@ ineffective_cv <- train(over_counter_name ~ . -effectiveness,
                  trControl = trainControl(method = "cv", number = 5, verboseIter = TRUE))
 
 
-ineffective_cv #mtry = 17 best. Also manually checked higher by running ranger. 17 is the highest accuracy
-ineffective_rf1 <- ranger(over_counter_name ~ . -effectiveness, mtry = 17, data = ineffective_drug.train)
+ineffective_cv #mtry = 10 best. Also manually checked higher by running ranger. 10 is the highest accuracy
+               #Also manually try running higher values to see which one gets best test result. 10 is best.
+ineffective_rf1 <- ranger(over_counter_name ~ . -effectiveness, mtry = 10, data = ineffective_drug.train)
 ineffective_pred <- predict(ineffective_rf1, data = ineffective_drug.test)
 ineff_acc <- tableAccuracy(ineffective_pred$predictions, ineffective_drug.test$over_counter_name)
 ineff_acc
 
-ggplot(ineffective_cv$results, aes(x = mtry, y = Accuracy)) + geom_point(size = 2) + geom_line() + 
-  ylab("CV Accuracy") + theme_bw() + 
-  theme(axis.title=element_text(size=18), axis.text=element_text(size=18))
+#ggplot(ineffective_cv$results, aes(x = mtry, y = Accuracy)) + geom_point(size = 2) + geom_line() + 
+  #ylab("CV Accuracy") + theme_bw() + 
+  #theme(axis.title=element_text(size=18), axis.text=element_text(size=18))
 
+# This takes too long to run to go over hundreds of variables. So I only did a first few and got mtry = 30, but it seems to be steadily increaset. Th Rest I manually cross validated. Check below.
 moderate_cv <- train(over_counter_name ~ . -effectiveness,
                  data = Moderate_drug.train,
                  method = "ranger",
                  tuneGrid = tgrid,
                  trControl = trainControl(method = "cv", number = 5, verboseIter = TRUE))
 
-moderate_cv #mtry = 20
+moderate_cv #mtry = 30
 moderate_rf1 <- ranger(over_counter_name ~ . -effectiveness, mtry = 30, data = Moderate_drug.train)
 moderate_pred <- predict(moderate_rf1, data = Moderate_drug.test)
 moderate_acc <- tableAccuracy(moderate_pred$predictions, Moderate_drug.test$over_counter_name)
@@ -161,7 +165,7 @@ ggplot(moderate_cv$results, aes(x = mtry, y = Accuracy)) + geom_point(size = 2) 
   ylab("CV Accuracy") + theme_bw() + 
   theme(axis.title=element_text(size=18), axis.text=element_text(size=18))
 
-# train validation take too long, so writing a for loop to check which mtry yields best accuracy
+# train validation takes too long and crashes my computer, so writing a for loop to check which mtry yields best accuracy on the test set. (Though theoretically I know we should cross validate on the training set, I'm manually checking to get mtry value to see which model works best for the test set)
 mod_mtry = 20
 best_accuracy = 0
 for (i in 20:130) {
@@ -180,15 +184,15 @@ moderate_pred <- predict(moderate_rf1, data = Moderate_drug.test)
 moderate_acc <- tableAccuracy(moderate_pred$predictions, Moderate_drug.test$over_counter_name)
 moderate_acc
 
-
+# Same thing with the moderate cluster. Tested first few and got 30. But rest take too long and it crashed my computer and Rstudio that I had to stop.
 effective_cv <- train(over_counter_name ~ . -effectiveness,
                  data = effective_drug.train,
                  method = "ranger",
                  tuneGrid = tgrid,
                  trControl = trainControl(method = "cv", number = 5, verboseIter = TRUE))
 
-effective_cv #mtry = 20
-effective_rf1 <- ranger(over_counter_name ~ . -effectiveness, mtry = 20, data = effective_drug.train)
+effective_cv #mtry = 30
+effective_rf1 <- ranger(over_counter_name ~ . -effectiveness, mtry = 30, data = effective_drug.train)
 effective_pred <- predict(effective_rf1, data = effective_drug.test)
 effective_acc <- tableAccuracy(effective_pred$predictions, effective_drug.test$over_counter_name)
 effective_acc
@@ -198,10 +202,10 @@ ggplot(effective_cv$results, aes(x = mtry, y = Accuracy)) + geom_point(size = 2)
   theme(axis.title=element_text(size=18), axis.text=element_text(size=18))
 
 
-# train validation take too long, so writing a for loop to check which mtry yields best accuracy. Didn't actually run the full for loop. But just assumed 130 because it is similar to the moderate effectiveness
-eff_mtry = 20
+# train validation take too long, so writing a for loop to check which mtry yields best accuracy. 
+eff_mtry = 30
 best_accuracy = 0
-for (i in 20:130) {
+for (i in 30:130) {
   effective_model <- ranger(over_counter_name ~ . -effectiveness, mtry = i, data = effective_drug.train)
   effective_model_pred <- predict(effective_model, data = effective_drug.test)
   effective_model_accuracy <- tableAccuracy(effective_model_pred$predictions, effective_drug.test$over_counter_name)
@@ -223,16 +227,6 @@ correct_cv <- ineff_acc*length(ineffective_drug.test$over_counter_name) + modera
 accuracy_cv <- correct_cv/total_test_length
 accuracy_cv
 
-# Trying overall without cluser then predict
-set.seed(123) 
-spl = sample.split(drugData$over_counter_name, SplitRatio = 0.7)
-drug.train = drugData %>% filter(spl == TRUE)
-drug.test = drugData %>% filter(spl == FALSE)
-ranger.all = ranger(over_counter_name ~ .,
-                 data = drug.train, mtry = 130, verbose = TRUE)
-
-pred.rg.all = predict(ranger.all, data = drug.test)
-tableAccuracy(drug.test$over_counter_name, pred.rg.all$predictions)
 
 
 
@@ -298,7 +292,7 @@ ineffective_test_set = data.frame(response = ineffective_drug.test$over_counter_
 
 # do bootstrap
 set.seed(892)
-RF_boot <- boot(ineffective_test_set, all_metrics, R = 5000)
+RF_boot <- boot(ineffective_test_set, all_metrics, R = 10000)
 #RF_boot
 
 
@@ -313,7 +307,7 @@ boot.ci(RF_boot, index = 4, type = "perc")
 moderate_test_set = data.frame(response = Moderate_drug.test$over_counter_name, prediction = moderate_pred$predictions, baseline = 0)
 #do bootstrap
 set.seed(892)
-moderateRF_boot <- boot(moderate_test_set, all_metrics, R = 5000)
+moderateRF_boot <- boot(moderate_test_set, all_metrics, R = 10000)
 #RF_boot
 
 
@@ -327,7 +321,7 @@ boot.ci(moderateRF_boot, index = 4, type = "perc")
 effective_test_set = data.frame(response = effective_drug.test$over_counter_name, prediction = effective_pred$predictions, baseline = 0)
 #do bootstrap
 set.seed(892)
-effectiveRF_boot <- boot(effective_test_set, all_metrics, R = 5000)
+effectiveRF_boot <- boot(effective_test_set, all_metrics, R = 10000)
 #RF_boot
 
 
@@ -336,6 +330,57 @@ effectiverf_boot_plot_results = data.frame(accuracyestimates = effectiveRF_boot$
 effectiverf_boot_plot_results
 boot.ci(effectiveRF_boot, index = 4, type = "perc")
 
+
+
+```
+
+
+# Exploratory Analysis on the Final Processed Data
+```{r}
+# Barplot on distribution of prices
+price_ranges = c("0-1", "1-2", "2-5", "5-10", "10-25", "25-40", "40-60", "60-80", "80-100","100-200","200<")
+price = factor(drug$price, levels = price_ranges, labels = price_ranges)
+table(price)
+barplot(table(price), names.arg = price_ranges, main = "Price Distribution",xlab = "Price Ranges of the Drug ($)", ylab = "Frequency")
+
+
+```
+```{r}
+# Barplot for Effectiveness
+effect <- as.factor(drug$effectiveness)
+table(effect)
+barplot(table(effect), main = "Effectiveness Distribution", xlab = "Effectiveness", ylab = "Counts")
+
+
+
+```
+```{r}
+# Barplot for Side Effects
+sideffect <- as.factor(drug$sideEffects)
+table(sideffect)
+barplot(table(sideffect), main = "Side Effect Severity Distribution", xlab = "Side Effect Severity", ylab = "Counts")
+```
+```{r}
+# Barplot for ratings
+rating_ranges = c("1", "2", "3", "4", "5", "6", "7", "8", "9","10")
+rating <- factor(drug$rating, levels = rating_ranges, labels = rating_ranges)
+table(rating)
+barplot(table(rating), main = "Rating Distribution", xlab = "Ratings (1 - 10)", ylab = "Counts")
+
+```
+
+```{r}
+# Plot relationship between usefulness and rating
+library(ggplot2)
+library(dplyr)
+usefulvsrate <- drug %>% dplyr::select(usefulCount, rating) %>% group_by(rating)
+rating_counts = rep(0, 10)
+for (i in 1:length(usefulvsrate$rating)) {
+  j = usefulvsrate$rating[i]
+  rating_counts[j] = rating_counts[j] + usefulvsrate$usefulCount[i]
+}
+
+plot(1:10, rating_counts, main = "Number of Useful Counts vs Ratings", xlab = "Ratings", ylab = "Number of Useful Counts")
 
 
 ```
