@@ -33,6 +33,7 @@ library(softImpute)
 library(bigmemory)
 library(ranger)
 library(caret)
+library(boot)
 ```
 ```{r}
 drug = read.csv("C:/Users/Jordan Fan/IEOR142/project/drugs_final1.csv", stringsAsFactors = FALSE, na.strings = c("", "NA"))
@@ -405,6 +406,23 @@ nn_mod_1 %>% evaluate(testX, testY)
 ```
 
 ```{r}
+predict_classes = nn_mod_1 %>% predict_classes(trainX)
+```
+
+
+```{r}
+all_metrics <- function(data, index) {
+  mse <- mean_squared_error(data, index)
+  mae <- mean_absolute_error(data, index)
+  OSR2 <- OS_R_squared(data, index)
+  accurate <- accuracy(data, index)
+  return(c(mse, mae, OSR2, accurate))
+}
+boot_test_set = data.frame(response = testY, prediction = )
+```
+
+
+```{r}
 set.seed(1234)
 bootstrap_accuracy = function(model){
   bootstrap_nums = sample(1:nrow(wholeX), nrow(wholeX), replace = TRUE)
@@ -415,6 +433,11 @@ bootstrap_accuracy = function(model){
 }
 
 boot_acc_ci = replicate(5000, bootstrap_accuracy(nn_mod_1))
+```
+
+```{r}
+quantile(boot_acc_ci, 0.025)
+quantile(boot_acc_ci, 0.975)
 ```
 
 
