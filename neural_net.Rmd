@@ -51,7 +51,7 @@ drug = drug[drug$over_counter_name %in% keep_drugs,]
 drug2 = drug2[drug2$over_counter_name %in% keep_drugs,]
 ```
 
-
+#Data Processing and train/test split 
 ```{r}
 corpusCondition = Corpus(VectorSource(drug$condition))
 corpusCondition = tm_map(corpusCondition, tolower)
@@ -114,6 +114,7 @@ testY2 = model.matrix(~over_counter_name - 1, data = drug.test)
 
 ```
 
+#Baseline Accuracy 
 ```{r}
 sort(table(drug.train$over_counter_name))
 baseline_acc = sum(drug.test$over_counter_name == "citalopram")/nrow(drug.test)
@@ -121,6 +122,7 @@ baseline_acc
 ```
 baseline: 2.29%  
 
+#Single Layer with Sigmoid Activation Function 
 ```{r}
 use_session_with_seed(1237)
 
@@ -170,8 +172,9 @@ toc()
 nn_mod_1 %>% evaluate(testX, testY)
 
 ```
+The accuracy of the single layer neural network with a sigmoid activation function and 50 epochs is 70.34% 
 
-
+#Single Layer Relu Activation Function 
 ```{r}
 use_session_with_seed(1237)
 
@@ -194,6 +197,9 @@ training_history <- nn_mod_1 %>%
 toc()
 nn_mod_1 %>% evaluate(testX, testY)
 ```
+Single Layer Relu yields 63.56% accuracy, big decrease from sigmoid. 
+
+#2 Hidden Layer NN 
 ```{r}
 use_session_with_seed(1237)
 
@@ -228,6 +234,31 @@ nn_mod_1 = keras_model_sequential()
 nn_mod_1 %>% 
   layer_dense(units = 170, activation = "sigmoid", input_shape = c(136)) %>%
   layer_dense(units = 200, activation = "sigmoid") %>%
+  layer_dense(units = 192, activation = "softmax")
+
+nn_mod_1 %>% compile(
+  optimizer = "rmsprop",
+  loss = "categorical_crossentropy",
+  metrics = c("accuracy")
+)
+
+tic("Neural Net 1:") 
+training_history <- nn_mod_1 %>% 
+  fit(trainX, trainY, 
+      epochs = 75, validation_split = 0.2)
+toc()
+nn_mod_1 %>% evaluate(testX, testY)
+```
+Accuracy of 2 hidden layer increases to 78.98%
+
+```{r}
+use_session_with_seed(1237)
+
+nn_mod_1 = keras_model_sequential()
+
+nn_mod_1 %>% 
+  layer_dense(units = 170, activation = "sigmoid", input_shape = c(136)) %>%
+  layer_dense(units = 200, activation = "sigmoid") %>%
   layer_dense(units = 230, activation = "sigmoid") %>%
   layer_dense(units = 192, activation = "softmax")
 
@@ -245,7 +276,7 @@ toc()
 nn_mod_1 %>% evaluate(testX, testY)
 
 ```
-
+3 layers: 80.10% 
 
 ```{r}
 use_session_with_seed(1237)
@@ -275,6 +306,7 @@ nn_mod_1 %>% evaluate(testX, testY)
 ```
 
 
+#Data Processing for Binned Prices
 ```{r}
 corpusCondition = Corpus(VectorSource(drug2$condition))
 corpusCondition = tm_map(corpusCondition, tolower)
@@ -333,7 +365,7 @@ testY = model.matrix(~over_counter_name - 1, data = drug.test)
 
 
 ```
-
+#Single Layer NN with Binned Prices and Sigmoid Activation Function 
 ```{r}
 use_session_with_seed(1237)
 
@@ -357,7 +389,9 @@ toc()
 nn_mod_1 %>% evaluate(testX, testY)
 
 ```
-55.39%
+Accuracy: 55.39%
+
+#Single Layer NN on Binned Prices with Relu Activation Function 
 ```{r}
 use_session_with_seed(1237)
 
@@ -380,7 +414,9 @@ training_history <- nn_mod_1 %>%
 toc()
 nn_mod_1 %>% evaluate(testX, testY)
 ```
+Accuracy: 53.07%
 
+#2 Hidden Layer NN on Binned Prices 
 ```{r}
 use_session_with_seed(1237)
 
@@ -404,30 +440,41 @@ training_history <- nn_mod_1 %>%
 toc()
 nn_mod_1 %>% evaluate(testX, testY)
 ```
+Accuracy: 55.42% 
 
 ```{r}
-predict_classes = nn_mod_1 %>% predict_classes(trainX)
+#predicted_classes = nn_mod_1 %>% predict_classes(testX)
+#predicted_classes = #substring(sort(unique(colnames(testY)))[predicted_classes + 1], 17)
+```
+
+```{r}
+#OSR2 <- function(predictions, test, train) {
+#  SSE <- sum((test - predictions)^2)
+#  SST <- sum((test - mean(train))^2)
+#  r2 <- 1 - SSE/SST
+#  return(r2)
+#}
 ```
 
 
 ```{r}
-all_metrics <- function(data, index) {
-  mse <- mean_squared_error(data, index)
-  mae <- mean_absolute_error(data, index)
-  OSR2 <- OS_R_squared(data, index)
-  accurate <- accuracy(data, index)
-  return(c(mse, mae, OSR2, accurate))
-}
-boot_test_set = data.frame(response = testY, prediction = )
+#all_metrics <- function(data, index) {
+#  mse <- mean_squared_error(data, index)
+#  mae <- mean_absolute_error(data, index)
+#  OSR2 <- OS_R_squared(data, index)
+#  accurate <- accuracy(data, index)
+#  return(c(mse, mae, OSR2, accurate))
+#}
+#boot_test_set = data.frame(response = testY, prediction = )
 ```
 
-
+#Bootstrap CI for 2 Layer NN on Binned Prices 
 ```{r}
 set.seed(1234)
 bootstrap_accuracy = function(model){
-  bootstrap_nums = sample(1:nrow(wholeX), nrow(wholeX), replace = TRUE)
-  bootstrapX = wholeX[bootstrap_nums,]
-  bootstrapY = wholeY[bootstrap_nums,]
+  bootstrap_nums = sample(1:nrow(testX), nrow(testX), replace = TRUE)
+  bootstrapX = testX[bootstrap_nums,]
+  bootstrapY = testY[bootstrap_nums,]
   x = model %>% evaluate(bootstrapX, bootstrapY)
   return (x$acc)
 }
@@ -439,8 +486,9 @@ boot_acc_ci = replicate(5000, bootstrap_accuracy(nn_mod_1))
 quantile(boot_acc_ci, 0.025)
 quantile(boot_acc_ci, 0.975)
 ```
+95% CI are (54.66%, 56.18%) 
 
-
+#3 Hidden Layer NN on binned prices 
 ```{r}
 use_session_with_seed(1237)
 
@@ -466,3 +514,5 @@ toc()
 nn_mod_1 %>% evaluate(testX, testY)
 ```
 
+Accuracy: 53.61% 
+The accuracy on a 3 layer hidden NN decreased from the 2 layer hidden NN, so adding more layers becoming useless
