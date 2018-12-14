@@ -1,0 +1,445 @@
+---
+title: "Neural Net Model"
+author: "Jordan Fan"
+date: "November 25, 2018"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+```{r}
+library(tm)
+library(data.table)
+library(SnowballC)
+library(MASS)
+library(leaps)
+library(gbm)
+library(car)
+library(tidyverse)
+library(plyr)
+library(dplyr)
+library(tidytext)
+library(stringr)
+library(yardstick)
+library(tictoc)
+library(keras)
+library(caTools)
+#Need to install.packages("keras") and then run install_keras()
+library(data.table)
+library(softImpute)
+library(bigmemory)
+library(ranger)
+library(caret)
+```
+```{r}
+drug = read.csv("C:/Users/Jordan Fan/IEOR142/project/drugs_final1.csv", stringsAsFactors = FALSE, na.strings = c("", "NA"))
+drug2 = read.csv("C:/Users/Jordan Fan/IEOR142/project/drugs/Final_Data.csv", stringsAsFactors = FALSE, na.strings = c("", "NA"))
+
+drug$drugName = NULL 
+drug2$drugName = NULL
+```
+
+```{r}
+#removing rows where over_counter_name has frequency <= 50 
+sorted_counts = as.data.frame(sort(table(drug$over_counter_name)))
+keep_drugs = sorted_counts$Var1[106:nrow(sorted_counts)] 
+drug = drug[drug$over_counter_name %in% keep_drugs,]
+drug2 = drug2[drug2$over_counter_name %in% keep_drugs,]
+```
+
+
+```{r}
+corpusCondition = Corpus(VectorSource(drug$condition))
+corpusCondition = tm_map(corpusCondition, tolower)
+
+corpusReview = Corpus(VectorSource(drug$review))
+corpusReview = tm_map(corpusReview, tolower)
+corpusReview = tm_map(corpusReview, function(x) gsub("[^a-z0-9]", " ", x))
+#corpusCondition = tm_map(corpusCondition, removePunctuation)
+#corpusReview = tm_map(corpusReview, removePunctuation)
+corpusReview = tm_map(corpusReview, removeNumbers)
+exception = c("not", "no", "few", "reduc", "immedi", "didnt", "most", "quick", "never", "littl", "well")
+my_stopwords = setdiff(stopwords("english"), exception)
+corpusReview = tm_map(corpusReview, removeWords, c(my_stopwords, "im"))
+corpusReview = tm_map(corpusReview,stemDocument)
+
+strwrap(corpusReview[[1]])
+strwrap(corpusCondition[[1]])
+
+CondFreq = DocumentTermMatrix(corpusCondition)
+RevFreq = DocumentTermMatrix(corpusReview)
+
+sparseCond = removeSparseTerms(CondFreq, 0.995)
+sparseRev = removeSparseTerms(RevFreq, 0.90)
+
+CondData = as.data.frame(as.matrix(sparseCond))
+RevData = as.data.frame(as.matrix(sparseRev))
+
+drugData<-cbind(CondData,RevData)
+colnames(drugData) = make.names(colnames(drugData))
+drugData$over_counter_name = drug$over_counter_name
+#drugData$condition = as.factor(drug$condition)
+drugData$effectiveness = as.factor(drug$effectiveness)
+drugData$sideEffects = as.factor(drug$sideEffects)
+drugData$price = as.numeric(drug$price)
+drugData$rating = as.numeric(drug$rating)
+drugData$usefulCount = as.numeric(drug$usefulCount)
+drugData$sentiment = as.numeric(drug$sentiment)
+for (i in 1:ncol(drugData))
+{names(drugData) <- make.names(names(drugData), unique = TRUE) }
+set.seed(123) 
+spl = sample.split(drugData$over_counter_name, SplitRatio = 0.7)
+drug.train = drugData %>% filter(spl == TRUE)
+drug.test = drugData %>% filter(spl == FALSE)
+
+trainX = model.matrix(over_counter_name ~ ., data = drug.train)
+trainX = trainX[, 2:ncol(trainX)]
+trainY = model.matrix(~over_counter_name - 1, data = drug.train)
+
+trainX2 = model.matrix(over_counter_name ~ . -price, data = drug.train)
+trainX2 = trainX2[, 2:ncol(trainX2)]
+trainY2 = model.matrix(~over_counter_name - 1, data = drug.train)
+
+testX = model.matrix(over_counter_name ~ ., data = drug.test)
+testX = testX[, 2:ncol(testX)]
+testY = model.matrix(~over_counter_name - 1, data = drug.test)
+
+testX2 = model.matrix(over_counter_name ~ . -price, data = drug.test)
+testX2 = testX2[, 2:ncol(testX2)]
+testY2 = model.matrix(~over_counter_name - 1, data = drug.test)
+
+```
+
+```{r}
+sort(table(drug.train$over_counter_name))
+baseline_acc = sum(drug.test$over_counter_name == "citalopram")/nrow(drug.test)
+baseline_acc
+```
+baseline: 2.29%  
+
+```{r}
+use_session_with_seed(1237)
+
+
+nn_mod_1 = keras_model_sequential()
+
+nn_mod_1 %>% 
+  layer_dense(units = 272, activation = "sigmoid", input_shape = c(136)) %>%
+  layer_dense(units = 192, activation = "softmax")
+
+nn_mod_1 %>% compile(
+  optimizer = "rmsprop",
+  loss = "categorical_crossentropy",
+  metrics = c("accuracy")
+)
+
+tic("Neural Net 1:") 
+training_history <- nn_mod_1 %>% 
+  fit(trainX, trainY, 
+      epochs = 100, validation_split = 0.2)
+toc()
+nn_mod_1 %>% evaluate(testX, testY)
+
+```
+Running a neural network with a sigmoid function and 100 epochs yields a 48.49% accuracy. After a point, the number of epochs seemed to yield diminishing validation accuracy. Let's try the same exact neural network but with 50 epochs 
+
+```{r}
+use_session_with_seed(1237)
+
+nn_mod_1 = keras_model_sequential()
+
+nn_mod_1 %>% 
+  layer_dense(units = 170, activation = "sigmoid", input_shape = c(136)) %>%
+  layer_dense(units = 192, activation = "softmax")
+
+nn_mod_1 %>% compile(
+  optimizer = "rmsprop",
+  loss = "categorical_crossentropy",
+  metrics = c("accuracy")
+)
+
+# tic("Neural Net 1:") 
+training_history <- nn_mod_1 %>% 
+  fit(trainX, trainY, 
+      epochs = 50, validation_split = 0.2)
+toc()
+nn_mod_1 %>% evaluate(testX, testY)
+
+```
+
+
+```{r}
+use_session_with_seed(1237)
+
+nn_mod_1 = keras_model_sequential()
+
+nn_mod_1 %>% 
+  layer_dense(units = 170, activation = "relu", input_shape = c(136)) %>%
+  layer_dense(units = 192, activation = "softmax")
+
+nn_mod_1 %>% compile(
+  optimizer = "rmsprop",
+  loss = "categorical_crossentropy",
+  metrics = c("accuracy")
+)
+
+tic("Neural Net 1:") 
+training_history <- nn_mod_1 %>% 
+  fit(trainX, trainY, 
+      epochs = 50, validation_split = 0.2)
+toc()
+nn_mod_1 %>% evaluate(testX, testY)
+```
+```{r}
+use_session_with_seed(1237)
+
+nn_mod_1 = keras_model_sequential()
+
+nn_mod_1 %>% 
+  layer_dense(units = 170, activation = "sigmoid", input_shape = c(136)) %>%
+  layer_dense(units = 200, activation = "sigmoid") %>%
+  layer_dense(units = 192, activation = "softmax")
+
+nn_mod_1 %>% compile(
+  optimizer = "rmsprop",
+  loss = "categorical_crossentropy",
+  metrics = c("accuracy")
+)
+
+tic("Neural Net 1:") 
+training_history <- nn_mod_1 %>% 
+  fit(trainX, trainY, 
+      epochs = 50, validation_split = 0.2)
+toc()
+nn_mod_1 %>% evaluate(testX, testY)
+
+```
+Accuracy still seems to be increasing, try with more epochs 
+
+```{r}
+use_session_with_seed(1237)
+
+nn_mod_1 = keras_model_sequential()
+
+nn_mod_1 %>% 
+  layer_dense(units = 170, activation = "sigmoid", input_shape = c(136)) %>%
+  layer_dense(units = 200, activation = "sigmoid") %>%
+  layer_dense(units = 230, activation = "sigmoid") %>%
+  layer_dense(units = 192, activation = "softmax")
+
+nn_mod_1 %>% compile(
+  optimizer = "rmsprop",
+  loss = "categorical_crossentropy",
+  metrics = c("accuracy")
+)
+
+tic("Neural Net 1:") 
+training_history <- nn_mod_1 %>% 
+  fit(trainX, trainY, 
+      epochs = 75, validation_split = 0.2)
+toc()
+nn_mod_1 %>% evaluate(testX, testY)
+
+```
+
+
+```{r}
+use_session_with_seed(1237)
+
+nn_mod_1 = keras_model_sequential()
+
+nn_mod_1 %>% 
+  layer_dense(units = 170, activation = "sigmoid", input_shape = c(136)) %>%
+  layer_dense(units = 200, activation = "sigmoid") %>%
+  layer_dense(units = 230, activation = "sigmoid") %>%
+  layer_dense(units = 200, activation = "sigmoid") %>%
+  layer_dense(units = 192, activation = "softmax")
+
+nn_mod_1 %>% compile(
+  optimizer = "rmsprop",
+  loss = "categorical_crossentropy",
+  metrics = c("accuracy")
+)
+
+tic("Neural Net 1:") 
+training_history <- nn_mod_1 %>% 
+  fit(trainX, trainY, 
+      epochs = 100, validation_split = 0.2)
+toc()
+nn_mod_1 %>% evaluate(testX, testY)
+
+```
+
+
+```{r}
+corpusCondition = Corpus(VectorSource(drug2$condition))
+corpusCondition = tm_map(corpusCondition, tolower)
+
+corpusReview = Corpus(VectorSource(drug2$review))
+corpusReview = tm_map(corpusReview, tolower)
+corpusReview = tm_map(corpusReview, function(x) gsub("[^a-z0-9]", " ", x))
+#corpusCondition = tm_map(corpusCondition, removePunctuation)
+#corpusReview = tm_map(corpusReview, removePunctuation)
+corpusReview = tm_map(corpusReview, removeNumbers)
+exception = c("not", "no", "few", "reduc", "immedi", "didnt", "most", "quick", "never", "littl", "well")
+my_stopwords = setdiff(stopwords("english"), exception)
+corpusReview = tm_map(corpusReview, removeWords, c(my_stopwords, "im"))
+corpusReview = tm_map(corpusReview,stemDocument)
+
+strwrap(corpusReview[[1]])
+strwrap(corpusCondition[[1]])
+
+CondFreq = DocumentTermMatrix(corpusCondition)
+RevFreq = DocumentTermMatrix(corpusReview)
+
+sparseCond = removeSparseTerms(CondFreq, 0.995)
+sparseRev = removeSparseTerms(RevFreq, 0.90)
+
+CondData = as.data.frame(as.matrix(sparseCond))
+RevData = as.data.frame(as.matrix(sparseRev))
+
+drugData<-cbind(CondData,RevData)
+colnames(drugData) = make.names(colnames(drugData))
+drugData$over_counter_name = drug2$over_counter_name
+#drugData$condition = as.factor(drug$condition)
+drugData$effectiveness = as.factor(drug2$effectiveness)
+drugData$sideEffects = as.factor(drug2$sideEffects)
+drugData$price = as.factor(drug2$price)
+drugData$rating = as.numeric(drug2$rating)
+drugData$usefulCount = as.numeric(drug2$usefulCount)
+drugData$sentiment = as.numeric(drug2$sentiment)
+for (i in 1:ncol(drugData))
+{names(drugData) <- make.names(names(drugData), unique = TRUE) }
+set.seed(123) 
+spl = sample.split(drugData$over_counter_name, SplitRatio = 0.7)
+drug.train = drugData %>% filter(spl == TRUE)
+drug.test = drugData %>% filter(spl == FALSE)
+
+wholeX = model.matrix(over_counter_name ~., data = drugData)
+wholeX = wholeX[, 2:ncol(wholeX)]
+wholeY = model.matrix(~over_counter_name - 1, data = drugData)
+
+trainX = model.matrix(over_counter_name ~ ., data = drug.train)
+trainX = trainX[, 2:ncol(trainX)]
+trainY = model.matrix(~over_counter_name - 1, data = drug.train)
+
+testX = model.matrix(over_counter_name ~ ., data = drug.test)
+testX = testX[, 2:ncol(testX)]
+testY = model.matrix(~over_counter_name - 1, data = drug.test)
+
+
+```
+
+```{r}
+use_session_with_seed(1237)
+
+nn_mod_1 = keras_model_sequential()
+
+nn_mod_1 %>% 
+  layer_dense(units = 174, activation = "sigmoid", input_shape = c(145)) %>%
+  layer_dense(units = 192, activation = "softmax")
+
+nn_mod_1 %>% compile(
+  optimizer = "rmsprop",
+  loss = "categorical_crossentropy",
+  metrics = c("accuracy")
+)
+
+tic("Neural Net 1:") 
+training_history <- nn_mod_1 %>% 
+  fit(trainX, trainY, 
+      epochs = 30, validation_split = 0.2)
+toc()
+nn_mod_1 %>% evaluate(testX, testY)
+
+```
+55.39%
+```{r}
+use_session_with_seed(1237)
+
+nn_mod_1 = keras_model_sequential()
+
+nn_mod_1 %>% 
+  layer_dense(units = 174, activation = "relu", input_shape = c(145)) %>%
+  layer_dense(units = 192, activation = "softmax")
+
+nn_mod_1 %>% compile(
+  optimizer = "rmsprop",
+  loss = "categorical_crossentropy",
+  metrics = c("accuracy")
+)
+
+tic("Neural Net 1:") 
+training_history <- nn_mod_1 %>% 
+  fit(trainX, trainY, 
+      epochs = 30, validation_split = 0.2)
+toc()
+nn_mod_1 %>% evaluate(testX, testY)
+```
+
+```{r}
+use_session_with_seed(1237)
+
+nn_mod_1 = keras_model_sequential()
+
+nn_mod_1 %>% 
+  layer_dense(units = 150, activation = "sigmoid", input_shape = c(145)) %>%
+  layer_dense(units = 175, activation = "sigmoid") %>%
+  layer_dense(units = 192, activation = "softmax")
+
+nn_mod_1 %>% compile(
+  optimizer = "rmsprop",
+  loss = "categorical_crossentropy",
+  metrics = c("accuracy")
+)
+
+tic("Neural Net 1:") 
+training_history <- nn_mod_1 %>% 
+  fit(trainX, trainY, 
+      epochs = 50, validation_split = 0.2)
+toc()
+nn_mod_1 %>% evaluate(testX, testY)
+```
+
+```{r}
+set.seed(1234)
+bootstrap_accuracy = function(model){
+  bootstrap_nums = sample(1:nrow(wholeX), nrow(wholeX), replace = TRUE)
+  bootstrapX = wholeX[bootstrap_nums,]
+  bootstrapY = wholeY[bootstrap_nums,]
+  x = model %>% evaluate(bootstrapX, bootstrapY)
+  return (x$acc)
+}
+
+boot_acc_ci = replicate(5000, bootstrap_accuracy(nn_mod_1))
+```
+
+
+```{r}
+use_session_with_seed(1237)
+
+nn_mod_1 = keras_model_sequential()
+
+nn_mod_1 %>% 
+  layer_dense(units = 150, activation = "sigmoid", input_shape = c(145)) %>%
+  layer_dense(units = 175, activation = "sigmoid") %>%
+  layer_dense(units = 180, activation = "sigmoid") %>%
+  layer_dense(units = 192, activation = "softmax")
+
+nn_mod_1 %>% compile(
+  optimizer = "rmsprop",
+  loss = "categorical_crossentropy",
+  metrics = c("accuracy")
+)
+
+tic("Neural Net 1:") 
+training_history <- nn_mod_1 %>% 
+  fit(trainX, trainY, 
+      epochs = 80, validation_split = 0.2)
+toc()
+nn_mod_1 %>% evaluate(testX, testY)
+```
+
